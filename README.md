@@ -119,14 +119,6 @@ Re-indexes the repository after file changes.
 
 ---
 
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `CC_REPO_PATH` | required | Path to indexed repository |
-| `CC_TOKEN_BUDGET` | `8000` | Default token budget for `get_context` |
-
----
 
 ## Tech stack
 
