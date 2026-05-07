@@ -57,7 +57,7 @@ Requires Python 3.11+.
 context-compiler index
 
 # Preview what context a task would produce (no Claude needed)
-context-compiler explain --task "fix the payment retry logic"
+context-compiler explain --task "<Prompt>"
 ```
 
 All commands default to the current directory. Pass `--repo <path>` to target a different path.

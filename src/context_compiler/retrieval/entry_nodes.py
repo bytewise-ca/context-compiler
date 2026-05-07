@@ -117,9 +117,12 @@ def find_entry_nodes(
     bm25 = BM25Okapi(corpus)
     scores = bm25.get_scores(keywords)
 
-    # Collect positive-scoring candidates
+    # Collect positive-scoring candidates above a minimum threshold.
+    # The threshold prevents a single weak BM25 match (e.g. a common English word
+    # that rarely appears in code) from blocking the fuzzy/semantic fallback.
+    _BM25_MIN_SCORE = 0.5
     scored = sorted(
-        ((score, i) for i, score in enumerate(scores) if score > 0),
+        ((score, i) for i, score in enumerate(scores) if score >= _BM25_MIN_SCORE),
         reverse=True,
     )[:top_k]
 

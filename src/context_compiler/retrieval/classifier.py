@@ -28,10 +28,26 @@ _SIGNALS: dict[TaskType, frozenset[str]] = {
 ALL_SIGNAL_WORDS: frozenset[str] = frozenset().union(*_SIGNALS.values())
 
 _STOP_WORDS: frozenset[str] = frozenset({
+    # Articles / prepositions / conjunctions
     "a", "an", "the", "in", "for", "to", "of", "and", "or", "is",
     "it", "its", "on", "at", "by", "with", "from", "into", "that",
     "this", "be", "as", "are", "was", "were", "has", "have", "had",
     "do", "does", "did", "so", "but", "if", "not", "no", "up",
+    # Question / relative words
+    "when", "where", "which", "what", "who", "how", "why", "while",
+    "then", "than", "there", "their", "they", "them", "these", "those",
+    # Modal / auxiliary verbs
+    "can", "could", "will", "would", "should", "may", "might", "must",
+    "shall", "need", "ought",
+    # Common verbs that never appear as code symbols
+    "become", "becomes", "became", "accept", "accepts", "accepted",
+    "receive", "receives", "received", "regarding", "subsequently",
+    "existing", "related", "about", "already", "currently", "properly",
+    # Quantity / determiner words
+    "any", "some", "all", "both", "each", "every", "only", "also",
+    "even", "just", "still", "yet", "now", "here", "thus", "since",
+    "after", "before", "during", "between", "through", "without",
+    "over", "under", "per", "via", "much", "more", "most",
 })
 
 

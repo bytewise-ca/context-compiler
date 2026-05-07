@@ -1,12 +1,8 @@
 """Tests for scorer and rationale — validates scorer/spec.md and rationale/spec.md."""
 
-import shutil
-import kuzu
 import pytest
 from pathlib import Path
 
-from context_compiler.indexer.indexer import index_repository
-from context_compiler.indexer.graph import open_database
 from context_compiler.retrieval.entry_nodes import find_entry_nodes
 from context_compiler.retrieval.traversal import traverse
 from context_compiler.retrieval.scorer import score_and_compile
@@ -17,18 +13,6 @@ from context_compiler.retrieval.rationale import (
     render_explain_report,
 )
 from context_compiler.models import TaskType
-
-
-PYTHON_FIXTURE = Path(__file__).parent / "fixtures" / "python_repo"
-
-
-@pytest.fixture
-def python_conn(tmp_path):
-    repo = tmp_path / "repo"
-    shutil.copytree(PYTHON_FIXTURE, repo)
-    index_repository(repo, verbose=False)
-    db = open_database(repo)
-    return kuzu.Connection(db)
 
 
 def _full_pipeline(task: str, task_type: TaskType, budget: int, conn):

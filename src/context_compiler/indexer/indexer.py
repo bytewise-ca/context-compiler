@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import os
 import time
-import kuzu
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import kuzu
 
 from .graph import (
     open_database,
     create_schema,
-    clear_file_nodes,
-    insert_node,
-    insert_edge,
+    bulk_insert_nodes,
+    bulk_insert_edges,
     node_count,
     edge_count,
     graph_path,
@@ -20,6 +23,17 @@ from .parser import parse_file, ParseResult
 
 SUPPORTED_EXTENSIONS = {".py", ".ts", ".tsx"}
 GITIGNORE_ENTRY = ".claude-context/"
+
+_PLACEHOLDER_NODE = {
+    "symbol_name": "",
+    "symbol_type": "FILE",
+    "line_start": 0,
+    "line_end": 0,
+    "token_count": 0,
+    "last_modified": 0,
+    "language": "PYTHON",
+    "docstring": "",
+}
 
 
 def _ensure_gitignore(repo_root: Path) -> None:
@@ -37,14 +51,12 @@ def _collect_files(repo_root: Path) -> list[Path]:
     files = []
     for ext in SUPPORTED_EXTENSIONS:
         files.extend(repo_root.rglob(f"*{ext}"))
-    # Exclude files inside .claude-context itself
     return [f for f in files if GITIGNORE_ENTRY.rstrip("/") not in f.parts]
 
 
 def _resolve_unresolved_edges(conn: kuzu.Connection) -> None:
     """
-    Resolve __unresolved__::symbol_name CALLS edges to real node IDs.
-    For each unresolved target, find nodes whose symbol_name matches.
+    Resolve __unresolved__::symbol_name CALLS edges using a single batch lookup.
     """
     result = conn.execute(
         "MATCH (a:Node)-[e:Edge]->(b:Node) "
@@ -56,30 +68,34 @@ def _resolve_unresolved_edges(conn: kuzu.Connection) -> None:
         row = result.get_next()
         unresolved.append((row[0], row[1], row[2]))
 
+    if not unresolved:
+        return
+
+    # Batch-lookup all symbol names in one query
+    symbol_names = list({uid.split("::", 1)[-1] for _, uid, _ in unresolved})
+    matches_result = conn.execute(
+        "MATCH (n:Node) WHERE n.symbol_name IN $names "
+        "AND NOT n.id STARTS WITH '__' RETURN n.id, n.symbol_name",
+        {"names": symbol_names},
+    )
+    symbol_to_nodes: defaultdict[str, list[str]] = defaultdict(list)
+    while matches_result.has_next():
+        row = matches_result.get_next()
+        symbol_to_nodes[row[1]].append(row[0])
+
+    resolved: set[tuple[str, str, str]] = set()
     for source_id, unresolved_id, edge_type in unresolved:
-        symbol_name = unresolved_id.split("::", 1)[-1]
-        # Find all nodes with matching symbol_name
-        matches = conn.execute(
-            "MATCH (n:Node) WHERE n.symbol_name = $name RETURN n.id",
-            {"name": symbol_name},
-        )
-        while matches.has_next():
-            target_id = matches.get_next()[0]
-            conn.execute(
-                "MATCH (a:Node {id: $src}), (b:Node {id: $tgt}) "
-                "MERGE (a)-[e:Edge {edge_type: $et}]->(b)",
-                {"src": source_id, "tgt": target_id, "et": edge_type},
-            )
-        # Remove the unresolved placeholder node and its edges
-        conn.execute(
-            "MATCH (n:Node {id: $id}) DETACH DELETE n",
-            {"id": unresolved_id},
-        )
+        sym = unresolved_id.split("::", 1)[-1]
+        for target_id in symbol_to_nodes.get(sym, []):
+            resolved.add((source_id, target_id, edge_type))
+
+    bulk_insert_edges(conn, list(resolved))
+    conn.execute("MATCH (n:Node) WHERE n.id STARTS WITH '__unresolved__' DETACH DELETE n")
 
 
 def _resolve_covers_edges(conn: kuzu.Connection) -> None:
     """
-    Resolve __covers__::module COVERS edges to real file node IDs.
+    Resolve __covers__::module COVERS edges using Python-side path matching.
     """
     result = conn.execute(
         "MATCH (a:Node)-[e:Edge]->(b:Node) "
@@ -91,27 +107,28 @@ def _resolve_covers_edges(conn: kuzu.Connection) -> None:
         row = result.get_next()
         covers.append((row[0], row[1]))
 
+    if not covers:
+        return
+
+    # Fetch all FILE nodes once instead of one query per covers node
+    file_result = conn.execute(
+        "MATCH (n:Node) WHERE n.symbol_type = 'FILE' RETURN n.id, n.file_path"
+    )
+    file_nodes: list[tuple[str, str]] = []
+    while file_result.has_next():
+        row = file_result.get_next()
+        file_nodes.append((row[0], row[1]))
+
+    resolved: set[tuple[str, str, str]] = set()
     for source_id, covers_id in covers:
         module_ref = covers_id.split("::", 1)[-1]
-        # Strip leading ./ or ../ (TypeScript relative imports) and dots (Python module paths)
         clean_ref = module_ref.lstrip("./").replace(".", "/")
-        module_path_fragment = clean_ref
-        matches = conn.execute(
-            "MATCH (n:Node) WHERE n.symbol_type = 'FILE' "
-            "AND n.file_path CONTAINS $fragment RETURN n.id",
-            {"fragment": module_path_fragment},
-        )
-        while matches.has_next():
-            target_id = matches.get_next()[0]
-            conn.execute(
-                "MATCH (a:Node {id: $src}), (b:Node {id: $tgt}) "
-                "MERGE (a)-[e:Edge {edge_type: 'COVERS'}]->(b)",
-                {"src": source_id, "tgt": target_id},
-            )
-        conn.execute(
-            "MATCH (n:Node {id: $id}) DETACH DELETE n",
-            {"id": covers_id},
-        )
+        for node_id, file_path in file_nodes:
+            if clean_ref in file_path:
+                resolved.add((source_id, node_id, "COVERS"))
+
+    bulk_insert_edges(conn, list(resolved))
+    conn.execute("MATCH (n:Node) WHERE n.id STARTS WITH '__covers__' DETACH DELETE n")
 
 
 def index_repository(repo_root: Path, verbose: bool = True) -> dict:
@@ -123,28 +140,42 @@ def index_repository(repo_root: Path, verbose: bool = True) -> dict:
     repo_root = repo_root.resolve()
 
     _ensure_gitignore(repo_root)
-
     files = _collect_files(repo_root)
-    warnings_list = []
-    files_indexed = 0
+    warnings_list: list[str] = []
 
-    db = open_database(repo_root)
-    conn = kuzu.Connection(db)
-    create_schema(conn)
+    # --- Parse all files in parallel ---
+    workers = min(8, (os.cpu_count() or 4))
+    parse_results: list[ParseResult] = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        future_to_path = {ex.submit(parse_file, p, repo_root): p for p in files}
+        for future in as_completed(future_to_path):
+            path = future_to_path[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                msg = f"WARN: skipped {path.relative_to(repo_root)} — {exc}"
+                warnings_list.append(msg)
+                if verbose:
+                    print(msg)
+                continue
+            if result.error:
+                msg = f"WARN: skipped {path.relative_to(repo_root)} — {result.error}"
+                warnings_list.append(msg)
+                if verbose:
+                    print(msg)
+            else:
+                parse_results.append(result)
 
-    # Full reindex: drop all existing data
-    conn.execute("MATCH (n:Node) DETACH DELETE n")
+    files_indexed = len(parse_results)
 
-    for path in files:
-        result: ParseResult = parse_file(path, repo_root)
-        if result.error:
-            warnings_list.append(f"WARN: skipped {path.relative_to(repo_root)} — {result.error}")
-            if verbose:
-                print(warnings_list[-1])
-            continue
+    # --- Collect all nodes and edges ---
+    all_node_dicts: list[dict] = []
+    all_edges: list[tuple[str, str, str]] = []
+    real_node_ids: set[str] = set()
 
+    for result in parse_results:
         for node in result.nodes:
-            insert_node(conn, {
+            all_node_dicts.append({
                 "id": node.id,
                 "file_path": node.file_path,
                 "symbol_name": node.symbol_name or "",
@@ -156,15 +187,45 @@ def index_repository(repo_root: Path, verbose: bool = True) -> dict:
                 "language": node.language,
                 "docstring": node.docstring,
             })
-
+            real_node_ids.add(node.id)
         for edge in result.edges:
-            # Insert placeholder nodes for unresolved targets so edges can be inserted
-            _ensure_placeholder(conn, edge.target_id)
-            insert_edge(conn, edge.source_id, edge.target_id, edge.edge_type)
+            all_edges.append((edge.source_id, edge.target_id, edge.edge_type))
 
-        files_indexed += 1
+    # Deduplicate nodes (same ID can appear from multiple parse results)
+    seen_node_ids: set[str] = set()
+    unique_node_dicts: list[dict] = []
+    for nd in all_node_dicts:
+        if nd["id"] not in seen_node_ids:
+            seen_node_ids.add(nd["id"])
+            unique_node_dicts.append(nd)
+    all_node_dicts = unique_node_dicts
+    real_node_ids = seen_node_ids
 
-    # Post-processing: resolve unresolved edges
+    # Deduplicate edges and drop edges whose source doesn't exist (parser generates
+    # source IDs that don't match the corresponding node ID when the symbol name spans
+    # multiple lines — the old MATCH...MERGE silently skipped these).
+    all_edges = list({
+        (src, tgt, et)
+        for src, tgt, et in all_edges
+        if src in real_node_ids
+    })
+
+    # Placeholder nodes for unresolved edge targets
+    placeholder_ids = {tgt for _, tgt, _ in all_edges if tgt not in real_node_ids}
+    placeholder_node_dicts = [
+        {**_PLACEHOLDER_NODE, "id": pid, "file_path": pid}
+        for pid in placeholder_ids
+    ]
+
+    # --- Write to DB ---
+    db = open_database(repo_root)
+    conn = kuzu.Connection(db)
+    create_schema(conn)
+
+    bulk_insert_nodes(conn, all_node_dicts + placeholder_node_dicts)
+    bulk_insert_edges(conn, all_edges)
+
+    # --- Resolve placeholders ---
     _resolve_unresolved_edges(conn)
     _resolve_covers_edges(conn)
 
@@ -189,26 +250,6 @@ def index_repository(repo_root: Path, verbose: bool = True) -> dict:
         )
 
     return summary
-
-
-def _ensure_placeholder(conn: kuzu.Connection, node_id: str) -> None:
-    """Insert a minimal placeholder node if it doesn't exist. Used for unresolved refs."""
-    conn.execute(
-        """
-        MERGE (n:Node {id: $id})
-        ON CREATE SET
-            n.file_path = $id,
-            n.symbol_name = '',
-            n.symbol_type = 'FILE',
-            n.line_start = 0,
-            n.line_end = 0,
-            n.token_count = 0,
-            n.last_modified = 0,
-            n.language = 'PYTHON',
-            n.docstring = ''
-        """,
-        {"id": node_id},
-    )
 
 
 def refresh_repository(repo_root: Path, changed_files: list[str]) -> dict:

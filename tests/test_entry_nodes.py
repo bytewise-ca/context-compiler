@@ -1,35 +1,9 @@
 """Tests for entry node matching — validates against entry-node-matching/spec.md scenarios."""
 
-import shutil
-import kuzu
 import pytest
 from pathlib import Path
 
-from context_compiler.indexer.indexer import index_repository
-from context_compiler.indexer.graph import open_database
 from context_compiler.retrieval.entry_nodes import find_entry_nodes, _tokenise_symbol
-
-
-PYTHON_FIXTURE = Path(__file__).parent / "fixtures" / "python_repo"
-TS_FIXTURE = Path(__file__).parent / "fixtures" / "typescript_repo"
-
-
-@pytest.fixture
-def python_conn(tmp_path):
-    repo = tmp_path / "repo"
-    shutil.copytree(PYTHON_FIXTURE, repo)
-    index_repository(repo, verbose=False)
-    db = open_database(repo)
-    return kuzu.Connection(db)
-
-
-@pytest.fixture
-def ts_conn(tmp_path):
-    repo = tmp_path / "repo"
-    shutil.copytree(TS_FIXTURE, repo)
-    index_repository(repo, verbose=False)
-    db = open_database(repo)
-    return kuzu.Connection(db)
 
 
 # ── Tokenisation ────────────────────────────────────────────────────────────
