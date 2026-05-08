@@ -1,4 +1,4 @@
-# context-compiler
+# claude-context-compiler
 
 A local-first MCP server that indexes Python and TypeScript repositories into a dependency graph and returns the smallest correct context bundle for a given coding task — with a one-line rationale for every included file.
 
@@ -26,8 +26,6 @@ All component specs live in `openspec/specs/`. Read the relevant spec before imp
 | Rationale | `openspec/specs/rationale/spec.md` | FR-05, UC-06 |
 | MCP server | `openspec/specs/mcp-server/spec.md` | FR-06, UC-09/10 |
 
-Full requirements: `SRS-context-compiler.md`
-Full use cases: `SUC-context-compiler.md`
 
 ## Architecture
 
