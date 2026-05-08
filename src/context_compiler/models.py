@@ -20,6 +20,7 @@ class SymbolType(str, Enum):
 class Language(str, Enum):
     PYTHON = "PYTHON"
     TYPESCRIPT = "TYPESCRIPT"
+    JAVASCRIPT = "JAVASCRIPT"
 
 
 class EdgeType(str, Enum):

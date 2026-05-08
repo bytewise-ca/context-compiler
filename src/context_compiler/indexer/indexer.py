@@ -22,7 +22,7 @@ from .graph import (
 )
 from .parser import parse_file, ParseResult
 
-SUPPORTED_EXTENSIONS = {".py", ".ts", ".tsx"}
+SUPPORTED_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx"}
 GITIGNORE_ENTRY = ".claude-context/"
 
 _EXCLUDED_DIRS = {

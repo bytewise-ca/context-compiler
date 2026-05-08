@@ -13,6 +13,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tree_sitter_javascript
 import tree_sitter_python
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser
@@ -23,6 +24,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="tree_sitt
 PY_LANGUAGE = Language(tree_sitter_python.language())
 TS_LANGUAGE = Language(tree_sitter_typescript.language_typescript())
 TSX_LANGUAGE = Language(tree_sitter_typescript.language_tsx())
+JS_LANGUAGE = Language(tree_sitter_javascript.language())
 
 TEST_FILE_PATTERNS = [
     re.compile(r"^test_.+\.py$"),
@@ -31,6 +33,10 @@ TEST_FILE_PATTERNS = [
     re.compile(r"^.+\.spec\.ts$"),
     re.compile(r"^.+\.test\.tsx$"),
     re.compile(r"^.+\.spec\.tsx$"),
+    re.compile(r"^.+\.test\.js$"),
+    re.compile(r"^.+\.spec\.js$"),
+    re.compile(r"^.+\.test\.jsx$"),
+    re.compile(r"^.+\.spec\.jsx$"),
 ]
 
 
@@ -128,6 +134,8 @@ def parse_file(path: Path, repo_root: Path) -> ParseResult:
         return _parse_python(path, repo_root)
     elif suffix in (".ts", ".tsx"):
         return _parse_typescript(path, repo_root)
+    elif suffix in (".js", ".jsx"):
+        return _parse_javascript(path, repo_root)
     return ParseResult(error=f"unsupported extension: {suffix}")
 
 
@@ -501,6 +509,87 @@ def _resolve_ts_import(raw: str, from_file: str, repo_root: Path) -> str | None:
     from_dir = (repo_root / from_file).parent
     base = (from_dir / raw).resolve()
     for ext in ("", ".ts", ".tsx", "/index.ts", "/index.tsx"):
+        candidate = Path(str(base) + ext)
+        if candidate.exists():
+            try:
+                return str(candidate.relative_to(repo_root))
+            except ValueError:
+                pass
+    return None
+
+
+def _parse_javascript(path: Path, repo_root: Path) -> ParseResult:
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return ParseResult(error=str(e))
+
+    parser = Parser(JS_LANGUAGE)
+    try:
+        tree = parser.parse(source.encode())
+    except Exception as e:
+        return ParseResult(error=str(e))
+
+    rel_path = str(path.relative_to(repo_root))
+    last_modified = int(path.stat().st_mtime)
+    result = ParseResult()
+
+    file_node = ParsedNode(
+        id=rel_path,
+        file_path=rel_path,
+        symbol_name=None,
+        symbol_type="FILE",
+        line_start=1,
+        line_end=source.count("\n") + 1,
+        token_count=token_estimate(source),
+        last_modified=last_modified,
+        language="JAVASCRIPT",
+    )
+    result.nodes.append(file_node)
+
+    # Reuse TypeScript walker — JS and TS share the same node type names
+    _walk_typescript(tree.root_node, source, rel_path, last_modified, result, parent_class=None)
+    _extract_javascript_imports(tree.root_node, source, rel_path, repo_root, result)
+
+    if is_test_file(path):
+        _extract_typescript_covers(tree.root_node, source, rel_path, result)
+
+    # Fix language field — walker sets TYPESCRIPT, override to JAVASCRIPT
+    for node in result.nodes:
+        if node.language == "TYPESCRIPT":
+            node.language = "JAVASCRIPT"
+
+    return result
+
+
+def _extract_javascript_imports(
+    root: Node,
+    source: str,
+    file_path: str,
+    repo_root: Path,
+    result: ParseResult,
+) -> None:
+    for node in _iter_nodes(root):
+        if node.type == "import_statement":
+            source_node = node.child_by_field_name("source")
+            if source_node:
+                raw = source[source_node.start_byte:source_node.end_byte].strip("'\"")
+                target = _resolve_js_import(raw, file_path, repo_root)
+                if target:
+                    result.edges.append(ParsedEdge(
+                        source_id=file_path,
+                        target_id=target,
+                        edge_type="IMPORTS",
+                    ))
+
+
+def _resolve_js_import(raw: str, from_file: str, repo_root: Path) -> str | None:
+    """Resolve a relative JS/JSX import path to a repo-relative file path."""
+    if not raw.startswith("."):
+        return None
+    from_dir = (repo_root / from_file).parent
+    base = (from_dir / raw).resolve()
+    for ext in ("", ".js", ".jsx", "/index.js", "/index.jsx"):
         candidate = Path(str(base) + ext)
         if candidate.exists():
             try:

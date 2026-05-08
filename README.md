@@ -1,32 +1,8 @@
 # context-compiler
 
-A local-first MCP server that indexes your Python and TypeScript codebase into a dependency graph and returns the **smallest correct context bundle** for any coding task, with a one-line rationale for every included symbol.
+An MCP server that indexes your codebase into a dependency graph and returns the **smallest correct context** for any coding task — exact line ranges per symbol, with a rationale for each one.
 
-No cloud. No LLM API calls. No data leaves your machine.
-
----
-
-## The problem
-
-When you ask Claude to fix a bug or add a feature, it reads files by guessing which ones are relevant. It over-reads (wastes tokens) or misses the file that actually matters. The bigger the codebase, the worse this gets.
-
-## How it works
-
-```
-Your task: "fix the payment retry logic"
-         ↓
-  Classify → BUG_FIX
-         ↓
-  Find entry nodes → payment_processor.py (BM25 + docstring matching)
-         ↓
-  Traverse graph → payment_processor.py + retry_handler.py + test_processor.py
-         ↓
-  Score + budget → 870 tokens (within 8000 limit)
-         ↓
-  Return symbol-level slices with line ranges + rationale per symbol
-```
-
-Everything (classification, traversal, scoring, rationale) is deterministic. Same repo + same task = same bundle, every time.
+**Runs entirely on your machine.** No cloud, no LLM API calls, no embeddings server, no internet connection required. Your source code and task descriptions never leave your laptop. The base install is lightweight — pure Python, no GPU, no heavy ML framework.
 
 ---
 
@@ -34,61 +10,55 @@ Everything (classification, traversal, scoring, rationale) is deterministic. Sam
 
 ```bash
 pip install claude-context-compiler
-```
-
-```bash
 cd /your/project
 context-compiler init
 ```
 
-That's it. `init` does three things in one step:
-1. Indexes your codebase into a local dependency graph
-2. Registers the MCP server with Claude Code
-3. Adds context-retrieval instructions to `CLAUDE.md`
-
-Then open Claude Code in your project. It will call `get_context` automatically before reading files.
+`init` indexes your codebase, registers the MCP server with Claude Code, and adds instructions to `CLAUDE.md`. Open Claude Code and it will call `get_context` automatically before reading files.
 
 Requires Python 3.11+.
 
 ### Multi-repo projects
 
-If your project spans multiple repositories, pass them as dependencies:
-
 ```bash
 context-compiler init --dependencies ../sbc-pay,../sbc-web
 ```
 
-Each repo is indexed into its own graph. The dependency list is saved alongside the primary graph and picked up automatically when the MCP server starts, no need to re-specify. `get_context` queries all graphs and returns the best-matching symbols across all repos.
+Each repo is indexed separately. `get_context` queries all graphs and returns the best-matching symbols across all repos. The dependency list is saved and picked up automatically on next start.
 
 ### Other commands
 
 ```bash
-# Re-index after large changes
-context-compiler index
-
-# Preview what context a task would produce (no Claude needed)
-context-compiler explain --task "<Prompt>"
+context-compiler index                        # re-index after large changes
+context-compiler explain --task "<prompt>"    # preview what context a task returns
 ```
 
-All commands default to the current directory. Pass `--repo <path>` to target a different path.
-
-### Optional: semantic fallback
-
-For better matching when task terms don't appear in symbol names (e.g. "fix login flow" → finds `authenticate_user`):
+### Optional: semantic search
 
 ```bash
 pip install "claude-context-compiler[semantic]"
 ```
 
-Downloads a 23MB ONNX model once, no PyTorch required.
+Enables embedding-based fallback for cases where task terms don't appear in symbol names (e.g. "fix login flow" finds `authenticate_user`). Downloads a 23MB ONNX model once, no PyTorch required.
 
 ---
 
-## MCP tools
+## How it works
 
-### `get_context(task, budget=8000)`
+Every step runs locally with no external calls:
 
-Returns the minimal symbol-level context bundle for a coding task.
+1. Classify the task: `BUG_FIX`, `NEW_FEATURE`, or `REFACTOR` (keyword scoring, no LLM)
+2. Find entry nodes via BM25 over symbol names, file paths, and docstrings
+3. Traverse the dependency graph with a strategy tuned per task type
+4. Score candidates, enforce a token budget, return slices with rationale
+
+The graph is stored in an embedded KuzuDB database in your project folder. No server process, no port, no auth.
+
+Same repo + same task = same output, every time.
+
+---
+
+## Output
 
 ```json
 {
@@ -105,40 +75,23 @@ Returns the minimal symbol-level context bundle for a coding task.
       "line_end": 38,
       "rationale": "Included RetryHandler because it is called by PaymentProcessor (depth 1)"
     }
-  ],
+  ]
 }
 ```
 
-Each slice points to the specific function or class that's relevant. Claude reads only those lines rather than the entire file.
-
-### `refresh(changed_files)`
-
-Re-indexes the repository after file changes. Claude calls this automatically after making code edits to keep the graph current.
-
----
-
-## What makes it different
-
-**Task-type-aware traversal.** A bug fix traverses inbound callers and test coverage at depth 2. A new feature traverses imports and sibling modules. A refactor traverses everything at depth 3. 
-
-**Symbol-level slices.** Returns exact line ranges for each relevant function or class, not whole files. Claude reads only what's needed. A 500-line file with one relevant function costs 40 tokens, not 500.
-
-**Rationale per symbol.** Every included slice has a one-line explanation of why it's there. You can see exactly what Claude will read before it reads it.
-
-**Local-only.** Embedded KuzuDB graph, no server, no port, no auth. Works offline.
+Each slice points to the specific function or class that's relevant. A 500-line file with one relevant function costs ~40 tokens, not 500.
 
 ---
 
 ## Supported languages
 
-| Language | Parsing | Docstrings |
-|---|---|---|
-| Python | tree-sitter-python | ✓ (first line of docstring) |
-| TypeScript / TSX | tree-sitter-typescript | ✓ (JSDoc `/** */`) |
+| Language | Parsing |
+|---|---|
+| Python | tree-sitter-python |
+| TypeScript / TSX | tree-sitter-typescript |
+| JavaScript / JSX | tree-sitter-javascript |
 
 ---
-
-
 
 ## License
 
