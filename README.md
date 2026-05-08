@@ -21,7 +21,7 @@ Requires Python 3.11+.
 ### Multi-repo projects
 
 ```bash
-context-compiler init --dependencies ../sbc-pay,../sbc-web
+context-compiler init --dependencies ../repo1,../repo2
 ```
 
 Each repo is indexed separately. `get_context` queries all graphs and returns the best-matching symbols across all repos. The dependency list is saved and picked up automatically on next start.
