@@ -28,6 +28,7 @@ It returns a `slices` list. For each slice:
 - If `line_start` is null, read the whole file.
 - Otherwise, read only the relevant symbol: `offset=line_start, limit=line_end-line_start+1`.
 If `get_context` returns `GRAPH_NOT_FOUND`, run `context-compiler init`.
+After making code changes, call the `refresh` MCP tool with the list of files you modified so the graph stays current.
 """
 
 _CLAUDE_MD_MARKER = "get_context"

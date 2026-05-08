@@ -1,6 +1,6 @@
 # context-compiler
 
-A local-first MCP server that indexes your Python and TypeScript codebase into a dependency graph and returns the **smallest correct context bundle** for any coding task — with a one-line rationale for every included file.
+A local-first MCP server that indexes your Python and TypeScript codebase into a dependency graph and returns the **smallest correct context bundle** for any coding task, with a one-line rationale for every included symbol.
 
 No cloud. No LLM API calls. No data leaves your machine.
 
@@ -26,7 +26,7 @@ Your task: "fix the payment retry logic"
   Return symbol-level slices with line ranges + rationale per symbol
 ```
 
-Everything — classification, traversal, scoring, rationale — is deterministic. Same repo + same task = same bundle, every time.
+Everything (classification, traversal, scoring, rationale) is deterministic. Same repo + same task = same bundle, every time.
 
 ---
 
@@ -46,7 +46,7 @@ That's it. `init` does three things in one step:
 2. Registers the MCP server with Claude Code
 3. Adds context-retrieval instructions to `CLAUDE.md`
 
-Then open Claude Code in your project — it will call `get_context` automatically before reading files.
+Then open Claude Code in your project. It will call `get_context` automatically before reading files.
 
 Requires Python 3.11+.
 
@@ -58,7 +58,7 @@ If your project spans multiple repositories, pass them as dependencies:
 context-compiler init --dependencies ../sbc-pay,../sbc-web
 ```
 
-Each repo is indexed into its own graph. The dependency list is saved alongside the primary graph and picked up automatically when the MCP server starts — no need to re-specify. `get_context` queries all graphs and returns the best-matching symbols across all repos.
+Each repo is indexed into its own graph. The dependency list is saved alongside the primary graph and picked up automatically when the MCP server starts, no need to re-specify. `get_context` queries all graphs and returns the best-matching symbols across all repos.
 
 ### Other commands
 
@@ -109,25 +109,23 @@ Returns the minimal symbol-level context bundle for a coding task.
 }
 ```
 
-Each slice points to the specific function or class that's relevant — Claude reads only those lines rather than the entire file.
+Each slice points to the specific function or class that's relevant. Claude reads only those lines rather than the entire file.
 
 ### `refresh(changed_files)`
 
-Re-indexes the repository after file changes.
+Re-indexes the repository after file changes. Claude calls this automatically after making code edits to keep the graph current.
 
 ---
 
 ## What makes it different
 
-**Task-type-aware traversal.** A bug fix traverses inbound callers and test coverage at depth 2. A new feature traverses imports and sibling modules. A refactor traverses everything at depth 3. No other tool adjusts retrieval strategy based on what you're actually trying to do.
+**Task-type-aware traversal.** A bug fix traverses inbound callers and test coverage at depth 2. A new feature traverses imports and sibling modules. A refactor traverses everything at depth 3. 
 
-**Symbol-level slices.** Returns exact line ranges for each relevant function or class — not whole files. Claude reads only what's needed. A 500-line file with one relevant function costs 40 tokens, not 500.
+**Symbol-level slices.** Returns exact line ranges for each relevant function or class, not whole files. Claude reads only what's needed. A 500-line file with one relevant function costs 40 tokens, not 500.
 
 **Rationale per symbol.** Every included slice has a one-line explanation of why it's there. You can see exactly what Claude will read before it reads it.
 
-**Hard token budget.** The bundle never exceeds the limit, enforced at symbol granularity.
-
-**Local-first.** Embedded KuzuDB graph, no server, no port, no auth. Works offline.
+**Local-only.** Embedded KuzuDB graph, no server, no port, no auth. Works offline.
 
 ---
 
@@ -141,11 +139,6 @@ Re-indexes the repository after file changes.
 ---
 
 
-## Tech stack
-
-[tree-sitter](https://tree-sitter.github.io/) · [KuzuDB](https://kuzudb.com/) · [BM25 (rank-bm25)](https://github.com/dorianbrown/rank_bm25) · [rapidfuzz](https://github.com/maxbachmann/RapidFuzz) · [FastMCP](https://github.com/jlowin/fastmcp) · [fastembed](https://github.com/qdrant/fastembed) (optional)
-
----
 
 ## License
 
