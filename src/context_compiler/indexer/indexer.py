@@ -12,6 +12,7 @@ import kuzu
 
 from .graph import (
     open_database,
+    drop_database,
     create_schema,
     bulk_insert_nodes,
     bulk_insert_edges,
@@ -23,6 +24,14 @@ from .parser import parse_file, ParseResult
 
 SUPPORTED_EXTENSIONS = {".py", ".ts", ".tsx"}
 GITIGNORE_ENTRY = ".claude-context/"
+
+_EXCLUDED_DIRS = {
+    "venv", ".venv", "env", ".env",
+    "node_modules", "__pycache__",
+    ".git", ".hg", ".svn",
+    "dist", "build", ".eggs", ".tox",
+    "site-packages",
+}
 
 _PLACEHOLDER_NODE = {
     "symbol_name": "",
@@ -48,10 +57,19 @@ def _ensure_gitignore(repo_root: Path) -> None:
 
 
 def _collect_files(repo_root: Path) -> list[Path]:
+    excluded_marker = GITIGNORE_ENTRY.rstrip("/")
     files = []
-    for ext in SUPPORTED_EXTENSIONS:
-        files.extend(repo_root.rglob(f"*{ext}"))
-    return [f for f in files if GITIGNORE_ENTRY.rstrip("/") not in f.parts]
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _EXCLUDED_DIRS and not d.endswith(".egg-info")
+        ]
+        for name in filenames:
+            if Path(name).suffix in SUPPORTED_EXTENSIONS:
+                p = Path(dirpath) / name
+                if excluded_marker not in p.parts:
+                    files.append(p)
+    return files
 
 
 def _resolve_unresolved_edges(conn: kuzu.Connection) -> None:
@@ -139,6 +157,7 @@ def index_repository(repo_root: Path, verbose: bool = True) -> dict:
     start = time.monotonic()
     repo_root = repo_root.resolve()
 
+    drop_database(repo_root)
     _ensure_gitignore(repo_root)
     files = _collect_files(repo_root)
     warnings_list: list[str] = []

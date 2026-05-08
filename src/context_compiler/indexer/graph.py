@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import tempfile
 import kuzu
@@ -11,26 +12,57 @@ from pathlib import Path
 
 GRAPH_DIR = ".claude-context"
 GRAPH_FILE = "graph.db"
+WORKSPACE_FILE = "workspace.json"
 
 
 def _clean(s: str) -> str:
     """Sanitize a string field for CSV writing.
 
-    KuzuDB's relationship COPY FROM (PARALLEL=FALSE) does not unescape CSV-quoted
-    double-quotes (""→") in from/to columns, so any " in a node ID would cause a
-    lookup mismatch. Replace with single-quote. Also strip newlines which break
-    multi-line CSV field detection.
+    KuzuDB's COPY FROM does not correctly parse RFC 4180 quoted fields — commas
+    inside a quoted field are treated as column separators. Replace commas, quotes,
+    and newlines so no field ever needs quoting.
     """
     return (
         s.replace('\r\n', ' ')
          .replace('\n', ' ')
          .replace('\r', ' ')
          .replace('"', "'")
+         .replace(',', ' ')
     )
 
 
 def graph_path(repo_root: Path) -> Path:
     return repo_root / GRAPH_DIR / GRAPH_FILE
+
+
+def save_workspace(repo_root: Path, dependencies: list[Path]) -> None:
+    """Persist dependency repo paths alongside the primary graph."""
+    config = {"dependencies": [str(d.resolve()) for d in dependencies]}
+    config_path = repo_root / GRAPH_DIR / WORKSPACE_FILE
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2))
+
+
+def load_workspace(repo_root: Path) -> list[Path]:
+    """Return dependency repo paths saved by a previous init --dependencies call."""
+    config_path = repo_root / GRAPH_DIR / WORKSPACE_FILE
+    if not config_path.exists():
+        return []
+    try:
+        config = json.loads(config_path.read_text())
+        return [Path(p) for p in config.get("dependencies", [])]
+    except Exception:
+        return []
+
+
+def drop_database(repo_root: Path) -> None:
+    """Delete the graph DB so the next open starts completely fresh."""
+    import shutil
+    db_path = graph_path(repo_root)
+    if db_path.is_dir():
+        shutil.rmtree(db_path)
+    elif db_path.exists():
+        db_path.unlink()
 
 
 def open_database(repo_root: Path) -> kuzu.Database:

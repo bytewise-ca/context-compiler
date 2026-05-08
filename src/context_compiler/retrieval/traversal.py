@@ -29,6 +29,8 @@ class CandidateNode:
     file_path: str
     symbol_name: str | None
     symbol_type: str
+    line_start: int
+    line_end: int
     token_count: int
     last_modified: int
     language: str
@@ -70,6 +72,8 @@ def traverse(
             file_path=entry.file_path,
             symbol_name=entry.symbol_name,
             symbol_type=entry.symbol_type,
+            line_start=meta["line_start"],
+            line_end=meta["line_end"],
             token_count=meta["token_count"],
             last_modified=meta["last_modified"],
             language=meta["language"],
@@ -112,6 +116,8 @@ def traverse(
                 file_path=meta["file_path"],
                 symbol_name=meta["symbol_name"] or None,
                 symbol_type=meta["symbol_type"],
+                line_start=meta["line_start"],
+                line_end=meta["line_end"],
                 token_count=meta["token_count"],
                 last_modified=meta["last_modified"],
                 language=meta["language"],
@@ -255,7 +261,7 @@ def _fetch_node_meta(node_id: str, conn: kuzu.Connection) -> dict | None:
     r = conn.execute(
         "MATCH (n:Node {id: $id}) "
         "RETURN n.file_path, n.symbol_name, n.symbol_type, "
-        "n.token_count, n.last_modified, n.language",
+        "n.token_count, n.last_modified, n.language, n.line_start, n.line_end",
         {"id": node_id},
     )
     if not r.has_next():
@@ -268,4 +274,6 @@ def _fetch_node_meta(node_id: str, conn: kuzu.Connection) -> dict | None:
         "token_count": row[3],
         "last_modified": row[4],
         "language": row[5],
+        "line_start": row[6],
+        "line_end": row[7],
     }

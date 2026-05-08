@@ -23,7 +23,7 @@ Your task: "fix the payment retry logic"
          ↓
   Score + budget → 870 tokens (within 8000 limit)
          ↓
-  Return bundle with rationale per file
+  Return symbol-level slices with line ranges + rationale per symbol
 ```
 
 Everything — classification, traversal, scoring, rationale — is deterministic. Same repo + same task = same bundle, every time.
@@ -50,6 +50,16 @@ Then open Claude Code in your project — it will call `get_context` automatical
 
 Requires Python 3.11+.
 
+### Multi-repo projects
+
+If your project spans multiple repositories, pass them as dependencies:
+
+```bash
+context-compiler init --dependencies ../sbc-pay,../sbc-web
+```
+
+Each repo is indexed into its own graph. The dependency list is saved alongside the primary graph and picked up automatically when the MCP server starts — no need to re-specify. `get_context` queries all graphs and returns the best-matching symbols across all repos.
+
 ### Other commands
 
 ```bash
@@ -63,7 +73,7 @@ context-compiler explain --task "<Prompt>"
 All commands default to the current directory. Pass `--repo <path>` to target a different path.
 
 ### Optional: semantic fallback
- [ This is not in prod yet; work in progress ] 
+
 For better matching when task terms don't appear in symbol names (e.g. "fix login flow" → finds `authenticate_user`):
 
 ```bash
@@ -78,19 +88,28 @@ Downloads a 23MB ONNX model once, no PyTorch required.
 
 ### `get_context(task, budget=8000)`
 
-Returns the minimal file bundle for a coding task.
+Returns the minimal symbol-level context bundle for a coding task.
 
 ```json
 {
-  "files": ["payments/processor.py", "payments/retry_handler.py", "tests/test_processor.py"],
-  "rationale": [
-    "Included PaymentProcessor as primary task location (matched 'payment')",
-    "Included RetryHandler because it is called by PaymentProcessor (depth 1)",
-    "Included test_processor.py — test coverage for PaymentProcessor"
+  "slices": [
+    {
+      "file_path": "/abs/path/payments/processor.py",
+      "line_start": 6,
+      "line_end": 24,
+      "rationale": "Included PaymentProcessor as primary task location (matched 'payment')"
+    },
+    {
+      "file_path": "/abs/path/payments/retry_handler.py",
+      "line_start": 12,
+      "line_end": 38,
+      "rationale": "Included RetryHandler because it is called by PaymentProcessor (depth 1)"
+    }
   ],
-  "confidence": 1.0
 }
 ```
+
+Each slice points to the specific function or class that's relevant — Claude reads only those lines rather than the entire file.
 
 ### `refresh(changed_files)`
 
@@ -102,9 +121,11 @@ Re-indexes the repository after file changes.
 
 **Task-type-aware traversal.** A bug fix traverses inbound callers and test coverage at depth 2. A new feature traverses imports and sibling modules. A refactor traverses everything at depth 3. No other tool adjusts retrieval strategy based on what you're actually trying to do.
 
-**Rationale per file.** Every included file has a one-line explanation of why it's there. You can see what Claude will read before it reads it.
+**Symbol-level slices.** Returns exact line ranges for each relevant function or class — not whole files. Claude reads only what's needed. A 500-line file with one relevant function costs 40 tokens, not 500.
 
-**Hard token budget.** The bundle never exceeds the limit. Partial file inclusion is not permitted.
+**Rationale per symbol.** Every included slice has a one-line explanation of why it's there. You can see exactly what Claude will read before it reads it.
+
+**Hard token budget.** The bundle never exceeds the limit, enforced at symbol granularity.
 
 **Local-first.** Embedded KuzuDB graph, no server, no port, no auth. Works offline.
 

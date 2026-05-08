@@ -12,13 +12,19 @@ from pathlib import Path
 import kuzu
 from fastmcp import FastMCP
 
-from context_compiler.indexer.graph import open_database, graph_path
+from context_compiler.indexer.graph import open_database, graph_path, load_workspace
 from context_compiler.indexer.indexer import index_repository, refresh_repository
-from context_compiler.models import ContextBundle, ErrorBundle, RefreshResult, TaskType
+from context_compiler.models import ContextBundle, ErrorBundle, FileSlice, RefreshResult, TaskType
 from context_compiler.retrieval.classifier import classify
 from context_compiler.retrieval.entry_nodes import find_entry_nodes
 from context_compiler.retrieval.rationale import build_excluded_list, build_rationale_list
-from context_compiler.retrieval.scorer import score_and_compile
+from context_compiler.retrieval.scorer import (
+    score_and_compile,
+    ScoredNode,
+    _WARNING_ALL_FIT,
+    _WARNING_BUDGET_LOW,
+    _WARNING_MORE_EXIST,
+)
 from context_compiler.retrieval.traversal import traverse
 
 mcp = FastMCP("context-compiler")
@@ -52,6 +58,39 @@ def _open_conn(repo_root: Path) -> kuzu.Connection | None:
         return None
 
 
+def _pipeline_for_repo(
+    task: str,
+    task_type: TaskType,
+    conn: kuzu.Connection,
+    repo_root: Path,
+) -> tuple[list[ScoredNode], list[dict], str]:
+    """Run entry matching + traversal + scoring for one graph.
+
+    Scores all candidates with no budget limit (budget enforced after merging).
+    Converts all file paths to absolute before returning.
+    Returns (scored_nodes, excluded_traversal_nodes, matched_term).
+    """
+    match_result = find_entry_nodes(task, conn, top_k=5)
+    if not match_result.candidates:
+        return [], [], ""
+
+    traversal = traverse(match_result.candidates, task_type, conn)
+
+    # Score with no budget limit — real budget is enforced after merging all repos
+    bundle = score_and_compile(traversal.candidates, budget=10_000_000, conn=conn)
+
+    # Make all file paths absolute
+    for sn in bundle.included:
+        if not Path(sn.candidate.file_path).is_absolute():
+            sn.candidate.file_path = str(repo_root / sn.candidate.file_path)
+    for ex in traversal.excluded:
+        if not Path(ex["file_path"]).is_absolute():
+            ex["file_path"] = str(repo_root / ex["file_path"])
+
+    matched_term = match_result.keywords[0] if match_result.keywords else ""
+    return bundle.included, traversal.excluded, matched_term
+
+
 @mcp.tool()
 def get_context(task: str, budget: int = 0) -> dict:
     """
@@ -75,71 +114,91 @@ def get_context(task: str, budget: int = 0) -> dict:
         return _GRAPH_NOT_FOUND.model_dump()
 
     try:
-        # 1. Classify
         classification = classify(task)
 
-        # 2. Find entry nodes
-        match_result = find_entry_nodes(task, conn, top_k=5)
+        # Open connections for primary repo + all workspace dependencies
+        repo_conns: list[tuple[Path, kuzu.Connection]] = [(repo_root, conn)]
+        for dep_root in load_workspace(repo_root):
+            dep_conn = _open_conn(dep_root)
+            if dep_conn is not None:
+                repo_conns.append((dep_root, dep_conn))
 
-        if not match_result.candidates:
+        # Run pipeline for each repo — paths become absolute, scores computed per-graph
+        all_scored: list[ScoredNode] = []
+        all_excluded_traversal: list[dict] = []
+        matched_term = ""
+        for rr, rc in repo_conns:
+            scored, excluded_t, term = _pipeline_for_repo(
+                task, classification.task_type, rc, rr
+            )
+            all_scored.extend(scored)
+            all_excluded_traversal.extend(excluded_t)
+            if term and not matched_term:
+                matched_term = term
+
+        if not all_scored:
             return ContextBundle(
                 task_type=classification.task_type,
                 confidence=classification.confidence,
                 low_confidence=True,
                 token_estimate=0,
                 tokens_saved=0,
-                files=[],
-                rationale=[],
+                slices=[],
                 excluded=[],
                 message=_NO_MATCH_MESSAGE,
             ).model_dump()
 
-        # 3. Traverse
-        traversal = traverse(match_result.candidates, classification.task_type, conn)
+        # Merge and enforce budget — same logic as score_and_compile
+        all_scored.sort(key=lambda s: (-s.score, s.candidate.file_path))
+        entries = [s for s in all_scored if s.candidate.is_entry]
+        max_entry_tokens = max((s.candidate.token_count for s in entries), default=0)
 
-        # 4. Score and compile
-        bundle = score_and_compile(traversal.candidates, budget, conn)
+        if max_entry_tokens > budget and entries:
+            fit_entries = [s for s in entries if s.candidate.token_count <= budget] or [entries[0]]
+            included = fit_entries
+            fit_ids = {id(s) for s in fit_entries}
+            excluded_budget = [s for s in all_scored if id(s) not in fit_ids]
+            token_total = sum(s.candidate.token_count for s in included)
+            warning: str | None = _WARNING_BUDGET_LOW
+        else:
+            included = []
+            excluded_budget = []
+            token_total = 0
+            for sn in all_scored:
+                if token_total + sn.candidate.token_count <= budget:
+                    included.append(sn)
+                    token_total += sn.candidate.token_count
+                else:
+                    excluded_budget.append(sn)
+            warning = _WARNING_ALL_FIT if not excluded_budget else _WARNING_MORE_EXIST.format(n=len(excluded_budget))
 
-        # 5. Rationale
-        matched_term = match_result.keywords[0] if match_result.keywords else ""
-        rationale_list = build_rationale_list(bundle.included, matched_term)
-        excluded_list = build_excluded_list(traversal.excluded, bundle.excluded_budget)
+        rationale_list = build_rationale_list(included, matched_term)
+        excluded_list = build_excluded_list(all_excluded_traversal, excluded_budget)
 
-        # Deduplicate files (multiple symbol nodes per file → show file once)
-        seen_files: dict[str, str] = {}  # file_path → rationale
-        for scored_node, rationale in zip(bundle.included, rationale_list):
-            fp = scored_node.candidate.file_path
-            if fp not in seen_files:
-                seen_files[fp] = rationale
+        slices: list[FileSlice] = []
+        for scored_node, rationale in zip(included, rationale_list):
+            c = scored_node.candidate
+            is_file_node = c.symbol_type == "FILE"
+            slices.append(FileSlice(
+                file_path=c.file_path,
+                line_start=None if is_file_node else c.line_start,
+                line_end=None if is_file_node else c.line_end,
+                rationale=rationale,
+            ))
 
-        files = list(seen_files.keys())
-        rationales = list(seen_files.values())
+        total_candidate_tokens = sum(s.candidate.token_count for s in all_scored)
+        tokens_saved = max(0, total_candidate_tokens - token_total)
 
-        # Total token estimate at file level
-        file_token_map: dict[str, int] = {}
-        for s in bundle.included:
-            fp = s.candidate.file_path
-            if fp not in file_token_map:
-                file_token_map[fp] = s.candidate.token_count
-
-        file_tokens = sum(file_token_map.values())
-        total_candidate_tokens = sum(
-            s.candidate.token_count for s in bundle.included + bundle.excluded_budget
-        )
-        tokens_saved = max(0, total_candidate_tokens - file_tokens)
-
-        result = ContextBundle(
+        return ContextBundle(
             task_type=classification.task_type,
             confidence=classification.confidence,
             low_confidence=classification.low_confidence,
-            token_estimate=file_tokens,
+            token_estimate=token_total,
             tokens_saved=tokens_saved,
-            files=files,
-            rationale=rationales,
+            slices=slices,
             excluded=excluded_list,
-            message=bundle.warning,
-        )
-        return result.model_dump()
+            message=warning if excluded_budget else None,
+        ).model_dump()
 
     except Exception as e:
         return ErrorBundle(

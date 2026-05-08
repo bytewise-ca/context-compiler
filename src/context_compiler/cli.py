@@ -24,7 +24,10 @@ _CLAUDE_MD_BLOCK = """\
 ## Context retrieval
 
 Before reading any source files, call the `get_context` MCP tool with your task description.
-Read only the files it returns. If it returns `GRAPH_NOT_FOUND`, run `context-compiler init`.
+It returns a `slices` list. For each slice:
+- If `line_start` is null, read the whole file.
+- Otherwise, read only the relevant symbol: `offset=line_start, limit=line_end-line_start+1`.
+If `get_context` returns `GRAPH_NOT_FOUND`, run `context-compiler init`.
 """
 
 _CLAUDE_MD_MARKER = "get_context"
@@ -76,13 +79,19 @@ def cli():
 
 @cli.command()
 @_REPO_OPTION
-def init(repo: str):
+@click.option(
+    "--dependencies",
+    default="",
+    help="Comma-separated paths to dependency repos (each indexed into its own graph)",
+)
+def init(repo: str, dependencies: str):
     """Index the repo, register the MCP server, and update CLAUDE.md."""
     from context_compiler.indexer.indexer import index_repository
+    from context_compiler.indexer.graph import save_workspace
 
     repo_root = Path(repo).resolve()
 
-    # 1. Index
+    # 1. Index primary repo
     click.echo(f"Indexing {repo_root} ...")
     summary = index_repository(repo_root, verbose=False)
     click.echo(
@@ -94,7 +103,27 @@ def init(repo: str):
     if summary["warnings"]:
         click.echo(f"  {len(summary['warnings'])} file(s) skipped due to parse errors.")
 
-    # 2. Register MCP server
+    # 2. Index dependencies
+    dep_roots: list[Path] = []
+    if dependencies:
+        for raw in dependencies.split(","):
+            dep_root = Path(raw.strip()).resolve()
+            if not dep_root.exists():
+                click.echo(f"  WARNING: dependency not found, skipping: {dep_root}")
+                continue
+            click.echo(f"Indexing dependency {dep_root} ...")
+            dep_summary = index_repository(dep_root, verbose=False)
+            click.echo(
+                f"  {dep_summary['files_indexed']} files · "
+                f"{dep_summary['nodes']} nodes · "
+                f"{dep_summary['edges']} edges · "
+                f"{dep_summary['elapsed_seconds']:.1f}s"
+            )
+            dep_roots.append(dep_root)
+        save_workspace(repo_root, dep_roots)
+        click.echo(f"  Workspace saved ({len(dep_roots)} dependencies).")
+
+    # 3. Register MCP server
     mcp_status = _register_mcp(repo_root)
     if mcp_status == "ok":
         click.echo("  MCP server registered with Claude Code.")
@@ -175,22 +204,25 @@ def explain(repo: str, task: str, budget: int):
     rationale_list = build_rationale_list(bundle.included, matched_term)
     excluded_list = build_excluded_list(traversal.excluded, bundle.excluded_budget)
 
-    seen_files: dict[str, str] = {}
+    included_display: list[tuple[str, str]] = []
     for scored_node, rationale in zip(bundle.included, rationale_list):
-        fp = scored_node.candidate.file_path
-        if fp not in seen_files:
-            seen_files[fp] = rationale
+        c = scored_node.candidate
+        if c.symbol_type == "FILE":
+            label = c.file_path
+        else:
+            label = f"{c.file_path}:{c.line_start}-{c.line_end}"
+        included_display.append((label, rationale))
 
-    file_tokens = sum(s.candidate.token_count for s in bundle.included)
-    total_tokens = file_tokens + sum(s.candidate.token_count for s in bundle.excluded_budget)
+    token_estimate = sum(s.candidate.token_count for s in bundle.included)
+    total_tokens = token_estimate + sum(s.candidate.token_count for s in bundle.excluded_budget)
 
     report = render_explain_report(
         task=task,
         task_type=classification.task_type.value,
         confidence=classification.confidence,
-        token_estimate=file_tokens,
-        tokens_saved=max(0, total_tokens - file_tokens),
-        included=list(seen_files.items()),
+        token_estimate=token_estimate,
+        tokens_saved=max(0, total_tokens - token_estimate),
+        included=included_display,
         excluded=excluded_list,
     )
     click.echo(report)

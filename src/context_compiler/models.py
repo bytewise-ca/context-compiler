@@ -29,8 +29,10 @@ class EdgeType(str, Enum):
     DEFINED_IN = "DEFINED_IN"
 
 
-class RationaleItem(BaseModel):
+class FileSlice(BaseModel):
     file_path: str
+    line_start: int | None = None  # None = whole file (FILE-type node)
+    line_end: int | None = None
     rationale: str
 
 
@@ -45,8 +47,7 @@ class ContextBundle(BaseModel):
     low_confidence: bool = False
     token_estimate: int
     tokens_saved: int
-    files: list[str]
-    rationale: list[str]
+    slices: list[FileSlice]
     excluded: list[str] = []
     message: str | None = None
 
