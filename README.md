@@ -1,8 +1,8 @@
 # context-compiler
 
-An MCP server that indexes your codebase into a dependency graph and returns the **smallest correct context** for any coding task — exact line ranges per symbol, with a rationale for each one.
+An MCP server that indexes your codebase into a dependency graph and returns the **smallest correct context** for any coding task: exact line ranges per symbol, with a rationale for each one.
 
-**Runs entirely on your machine.** No cloud, no LLM API calls, no embeddings server, no internet connection required. Your source code and task descriptions never leave your laptop. The base install is lightweight — pure Python, no GPU, no heavy ML framework.
+**Runs entirely on your machine.** No cloud, no LLM API calls, no embeddings server, no internet connection required. Your source code and task descriptions never leave your laptop. The base install is lightweight: pure Python, no GPU, no heavy ML framework.
 
 ---
 
